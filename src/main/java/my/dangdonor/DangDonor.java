@@ -9,14 +9,47 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
-public class DangDonor extends JavaPlugin implements CommandExecutor {
+public class DangDonor extends JavaPlugin implements CommandExecutor, Listener {
+
+    private static final int SIZE = 36;
+    private static final int CLAIM_SLOT = 31;   // bottom-middle
+    private static final int INFO_SLOT = 4;     // top-middle
+    private static final int PREVIEW_START = 9;
+    private static final int MAX_PREVIEW = 18;
+
+    private static class KitHolder implements InventoryHolder {
+        @Override
+        public Inventory getInventory() {
+            return null;
+        }
+    }
+
+    private static class KitItem {
+        final Material mat;
+        final int amount;
+
+        KitItem(Material mat, int amount) {
+            this.mat = mat;
+            this.amount = amount;
+        }
+    }
 
     private File dataFile;
     private YamlConfiguration data;
@@ -28,6 +61,7 @@ public class DangDonor extends JavaPlugin implements CommandExecutor {
         getConfig().addDefault("prefix", "&d[Donor] &r");
         getConfig().addDefault("prefix-priority", 60);
         getConfig().addDefault("kit-cooldown-hours", 24);
+        getConfig().addDefault("gui-title", "&8[ &dDonor Kit &8]");
         getConfig().addDefault("kit-items", Arrays.asList(
                 "GOLDEN_APPLE 8",
                 "COOKED_BEEF 32",
@@ -45,6 +79,7 @@ public class DangDonor extends JavaPlugin implements CommandExecutor {
         dataFile = new File(getDataFolder(), "data.yml");
         data = YamlConfiguration.loadConfiguration(dataFile);
 
+        Bukkit.getPluginManager().registerEvents(this, this);
         if (getCommand("dkit") != null) getCommand("dkit").setExecutor(this);
         if (getCommand("donor") != null) getCommand("donor").setExecutor(this);
     }
@@ -81,7 +116,7 @@ public class DangDonor extends JavaPlugin implements CommandExecutor {
                 sender.sendMessage("Only players can use this command.");
                 return true;
             }
-            claimKit(p);
+            openMenu(p);
             return true;
         }
 
@@ -149,21 +184,9 @@ public class DangDonor extends JavaPlugin implements CommandExecutor {
         s.sendMessage(color("&e/donor reload &7- reload the config"));
     }
 
-    // ---------- Daily kit ----------
-    private void claimKit(Player p) {
-        if (!p.hasPermission("dangdonor.kit")) {
-            p.sendMessage(msg("not-donor"));
-            return;
-        }
-
-        long cooldown = (long) (getConfig().getDouble("kit-cooldown-hours", 24) * 3_600_000L);
-        long last = data.getLong("last." + p.getUniqueId(), 0L);
-        long left = last + cooldown - System.currentTimeMillis();
-        if (left > 0) {
-            p.sendMessage(msg("kit-wait").replace("%time%", timeText(left)));
-            return;
-        }
-
+    // ---------- Kit data ----------
+    private List<KitItem> kitItems() {
+        List<KitItem> out = new ArrayList<>();
         for (String line : getConfig().getStringList("kit-items")) {
             String[] parts = line.trim().split("\\s+");
             Material m = Material.matchMaterial(parts[0]);
@@ -180,10 +203,110 @@ public class DangDonor extends JavaPlugin implements CommandExecutor {
                     continue;
                 }
             }
-            int max = m.getMaxStackSize();
+            if (amount > 0) out.add(new KitItem(m, amount));
+        }
+        return out;
+    }
+
+    private long remainingMs(Player p) {
+        long cooldown = (long) (getConfig().getDouble("kit-cooldown-hours", 24) * 3_600_000L);
+        long last = data.getLong("last." + p.getUniqueId(), 0L);
+        return last + cooldown - System.currentTimeMillis();
+    }
+
+    // ---------- GUI ----------
+    private void openMenu(Player p) {
+        Inventory inv = Bukkit.createInventory(new KitHolder(), SIZE,
+                color(getConfig().getString("gui-title", "&8[ &dDonor Kit &8]")));
+
+        ItemStack pane = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta pm = pane.getItemMeta();
+        pm.setDisplayName(" ");
+        pane.setItemMeta(pm);
+        for (int i = 0; i < SIZE; i++) inv.setItem(i, pane);
+
+        // Title item
+        inv.setItem(INFO_SLOT, button(Material.NETHER_STAR, "&d&lDaily Donor Kit",
+                "&7Thank you for supporting us!"));
+
+        // Kit preview
+        List<KitItem> kit = kitItems();
+        for (int i = 0; i < kit.size() && i < MAX_PREVIEW; i++) {
+            KitItem k = kit.get(i);
+            ItemStack it = new ItemStack(k.mat, Math.min(k.amount, k.mat.getMaxStackSize()));
+            ItemMeta m = it.getItemMeta();
+            m.setLore(List.of("", color("&7Amount: &fx" + k.amount)));
+            m.addItemFlags(ItemFlag.values());
+            it.setItemMeta(m);
+            inv.setItem(PREVIEW_START + i, it);
+        }
+
+        // Claim button
+        if (!p.hasPermission("dangdonor.kit")) {
+            inv.setItem(CLAIM_SLOT, button(Material.BARRIER, "&c&lDONORS ONLY",
+                    "&7Get a donor rank to claim this kit."));
+        } else {
+            long left = remainingMs(p);
+            if (left > 0) {
+                inv.setItem(CLAIM_SLOT, button(Material.RED_STAINED_GLASS_PANE, "&c&lON COOLDOWN",
+                        "&7Ready in &f" + timeText(left)));
+            } else {
+                inv.setItem(CLAIM_SLOT, button(Material.LIME_STAINED_GLASS_PANE, "&a&lCLAIM KIT",
+                        "&7Click to claim your daily kit."));
+            }
+        }
+
+        p.openInventory(inv);
+    }
+
+    private ItemStack button(Material mat, String name, String lore) {
+        ItemStack item = new ItemStack(mat);
+        ItemMeta m = item.getItemMeta();
+        m.setDisplayName(color(name));
+        m.setLore(List.of(color(lore)));
+        item.setItemMeta(m);
+        return item;
+    }
+
+    @EventHandler
+    public void onClick(InventoryClickEvent e) {
+        Inventory top = e.getView().getTopInventory();
+        if (!(top.getHolder() instanceof KitHolder)) return;
+        e.setCancelled(true);
+        if (e.getClickedInventory() != top) return;
+        if (!(e.getWhoClicked() instanceof Player p)) return;
+
+        if (e.getSlot() == CLAIM_SLOT) {
+            claimKit(p);
+            // Refresh the menu so the button shows the new state
+            Bukkit.getScheduler().runTask(this, () -> openMenu(p));
+        }
+    }
+
+    @EventHandler
+    public void onDrag(InventoryDragEvent e) {
+        if (e.getView().getTopInventory().getHolder() instanceof KitHolder) e.setCancelled(true);
+    }
+
+    // ---------- Claim ----------
+    private void claimKit(Player p) {
+        if (!p.hasPermission("dangdonor.kit")) {
+            p.sendMessage(msg("not-donor"));
+            return;
+        }
+
+        long left = remainingMs(p);
+        if (left > 0) {
+            p.sendMessage(msg("kit-wait").replace("%time%", timeText(left)));
+            return;
+        }
+
+        for (KitItem k : kitItems()) {
+            int amount = k.amount;
+            int max = k.mat.getMaxStackSize();
             while (amount > 0) {
                 int n = Math.min(amount, max);
-                Map<Integer, ItemStack> rest = p.getInventory().addItem(new ItemStack(m, n));
+                Map<Integer, ItemStack> rest = p.getInventory().addItem(new ItemStack(k.mat, n));
                 for (ItemStack r : rest.values()) {
                     p.getWorld().dropItemNaturally(p.getLocation(), r);
                 }
@@ -204,4 +327,4 @@ public class DangDonor extends JavaPlugin implements CommandExecutor {
         if (hours > 0) return hours + "h " + minutes + "m";
         return minutes + "m";
     }
-                        }
+            }
