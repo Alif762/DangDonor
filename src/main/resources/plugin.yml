@@ -1,0 +1,20 @@
+name: DangDonor
+version: 1.0.0
+main: my.dangdonor.DangDonor
+api-version: "1.20"
+softdepend: [LuckPerms]
+commands:
+  dkit:
+    description: Claim your daily donor kit
+    usage: /dkit
+    aliases: [donorkit]
+  donor:
+    description: Manage donor ranks
+    usage: /donor <setup|give|remove|resetkit|reload>
+permissions:
+  dangdonor.kit:
+    description: Claim the daily donor kit
+    default: false
+  dangdonor.admin:
+    description: Manage donors
+    default: op
